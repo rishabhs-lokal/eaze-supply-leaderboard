@@ -35,10 +35,9 @@ Single-file Express backend (`server.js`) + static frontend (`public/`). No fram
 All leaderboard data comes from Redash (internal analytics). Three queries:
 - **Q1** (`REDASH_QUERY_1_ID`) — today's talktime for all listeners; has a `qualified` boolean (≥10 min)
 - **Q2** (`REDASH_QUERY_2_ID`) — yesterday's talktime
-- **Q3** (`REDASH_QUERY_3_ID`) — 7-day streak tiles per listener
 - **Q4** (`REDASH_QUERY_4_ID`) — mobile number → user_id lookup
 
-User requests NEVER trigger a Redash query (except a cold start with an empty cache): endpoints serve any same-IST-day cache instantly (`SERVE_TTL_MS` = 24 h; the IST-day guard in `fetchOrCache` is the real expiry). Background jobs own freshness: Q1 re-fetched every `Q1_REFRESH_MINUTES` (default 60) followed by `refreshPoolState()`; Q2/Q3 hourly. Fetched results are persisted to the `leaderboard_data_cache` table and restored on boot, so restarts serve instantly too.
+User requests NEVER trigger a Redash query (except a cold start with an empty cache): endpoints serve any same-IST-day cache instantly (`SERVE_TTL_MS` = 24 h; the IST-day guard in `fetchOrCache` is the real expiry). Background jobs own freshness: Q1 re-fetched every `Q1_REFRESH_MINUTES` (default 60) followed by `refreshPoolState()`; Q2 hourly. Fetched results are persisted to the `leaderboard_data_cache` table and restored on boot, so restarts serve instantly too.
 
 `MOCK_MODE` is active when `REDASH_QUERY_1_ID` is not set — returns hardcoded mock data so the UI is testable without Redash credentials.
 
@@ -64,19 +63,17 @@ Each listener sees a personal pool of 20 (themselves + 19 others), not global ra
 
 - `session` — express-session storage (Postgres or file fallback)
 - `leaderboard_pool_state` — per-(user, date) pool assignment and display_rank; rebuilt nightly
-- `listener_streak` — `(user_id, current_streak, last_qualifying_date, updated_at)`; updated at midnight IST (bonus payout tracking lives in BigQuery reward tables, not here)
 - `leaderboard_daily_results` — append-only per-(user, date) history of final display_rank, global_rank, talktime and qualified, written at midnight settlement (replaces the deprecated one-row-per-user `leaderboard_yesterday_results`)
 - `leaderboard_data_cache` — persisted Redash query results; restored on boot
 - `login_log` — append-only `(user_id, method, logged_in_at)`; written on banner/mobile login (not on page reloads within a live session); first login = `MIN(logged_in_at)`
 
-All DB operations are gated on `dbAvailable`. When `DATABASE_URL` is absent, falls back gracefully: in-memory neighbourhood slice for pool, Redash Q3 for streak count.
+All DB operations are gated on `dbAvailable`. When `DATABASE_URL` is absent, falls back gracefully to an in-memory neighbourhood slice for the pool.
 
 ### Midnight settlement (`midnightSettlement()`)
 
 Runs at 00:01 IST via `scheduleAtMidnight` (fixed UTC+5:30 offset math — host-timezone independent). Sequence:
-1. Updates `listener_streak` for all listeners who qualified yesterday (idempotent — a double run or second replica leaves streaks unchanged)
-2. Snapshots final display ranks into `leaderboard_daily_results` (talktime position within each frozen pool, global-top-3 cap applied)
-3. Deletes stale rows from `leaderboard_pool_state` and clears in-memory caches
+1. Snapshots final display ranks into `leaderboard_daily_results` (talktime position within each frozen pool, global-top-3 cap applied)
+2. Deletes stale rows from `leaderboard_pool_state` and clears in-memory caches
 
 The yesterday endpoint serves the snapshot only when its `date_ist` is actually yesterday — a listener who skipped a day falls through to the Q2 on-demand fallback instead of seeing a stale old-date row.
 
@@ -84,7 +81,6 @@ The yesterday endpoint serves the snapshot only when its `date_ist` is actually 
 
 `LEADERBOARD_START_DATE` (format `YYYY-MM-DD` IST) controls launch-day behaviour:
 - Yesterday endpoint returns `{ launch_day: true }` — no Redash Q2 call
-- Streak endpoint returns a fresh 0-day streak using only today's Q1 cache (ignores Q3 history)
 - `backfillYesterday()` skips entirely
 - Frontend renders a "Day 1" welcome card on the Yesterday tab
 
@@ -97,7 +93,6 @@ Test/mock mode (`req.session.mode = 'test'`) is only accessible to `TEST_USER_ID
 - `public/leaderboard.html` — shell; `#tab-today` / `#tab-yesterday` switched by JS
 - `public/leaderboard.js` — all fetch + render logic; no framework
   - `drift` object tracks velocity across polls for live ticker interpolation
-  - `loadStreak()` calls `renderStreak(null)` immediately (shows empty state) before the async fetch, so the streak section never disappears on API failure
 - `public/style.css` — single stylesheet; CSS custom properties at `:root`
 - `public/login.html` — self-contained (inline JS, no external deps)
 
@@ -111,8 +106,8 @@ Served from `Dostt_packages/` (a sibling directory, not inside the repo) via `ap
 |---|---|
 | `REDASH_BASE_URL` | Redash instance URL |
 | `REDASH_API_KEY` | Redash API key |
-| `REDASH_QUERY_1_ID` — `4_ID` | Query IDs for today / yesterday / streak / mobile lookup |
+| `REDASH_QUERY_1_ID`, `2_ID`, `4_ID` | Query IDs for today / yesterday / mobile lookup |
 | `DATABASE_URL` | Postgres connection string; omit to run without DB |
 | `SESSION_SECRET` | Express session signing secret |
-| `LEADERBOARD_START_DATE` | `YYYY-MM-DD` IST — suppresses yesterday/streak history on Day 1 |
+| `LEADERBOARD_START_DATE` | `YYYY-MM-DD` IST — suppresses yesterday history on Day 1 |
 | `PORT` | Default 3000 |

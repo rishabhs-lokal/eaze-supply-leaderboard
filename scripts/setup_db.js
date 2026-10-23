@@ -38,22 +38,8 @@ async function setup() {
       ADD COLUMN IF NOT EXISTS pool_members JSONB DEFAULT NULL;
   `);
 
-  await query(`
-    CREATE TABLE IF NOT EXISTS listener_streak (
-      user_id              INTEGER PRIMARY KEY,
-      current_streak       INTEGER DEFAULT 0,
-      last_qualifying_date DATE,
-      updated_at           TIMESTAMP
-    );
-  `);
-
-  // Bonus tracking moved to the BigQuery reward tables (manual crediting flow)
-  await query(`
-    ALTER TABLE listener_streak DROP COLUMN IF EXISTS total_bonuses_earned;
-  `);
-  await query(`
-    ALTER TABLE listener_streak DROP COLUMN IF EXISTS last_bonus_date;
-  `);
+  // NOTE: listener_streak is no longer created or written — the streak feature was
+  // removed. An existing table is intentionally left in place; its history stays put.
 
   // NOTE: leaderboard_yesterday_results is deprecated (one-row-per-user snapshot,
   // overwritten nightly). Replaced by the append-only leaderboard_daily_results

@@ -75,8 +75,7 @@ async function callRedash(queryId, parameters = null) {
 // ─── Cache ────────────────────────────────────────────────────────────────────
 const cache = {
   today:     { rows: null, fetchedAt: null },
-  yesterday: { rows: null, fetchedAt: null },
-  streak:    { rows: null, fetchedAt: null }
+  yesterday: { rows: null, fetchedAt: null }
 };
 
 // Q1 background refresh cadence (minutes, default hourly). Endpoints always serve
@@ -166,37 +165,6 @@ function placeInPool(G, N, targetRank) {
   let userPos = takeAbove + 1;
   if (above >= 3) userPos = Math.max(4, userPos); // never imply top-3 if 3+ ahead globally
   return { takeAbove, takeBelow, userPos };
-}
-
-// computeStreak: consecutive qualifying days clamped to LEADERBOARD_START_DATE.
-// Streak is "held" at yesterday's count during the day — only resets at midnight if today ends unqualified.
-function computeStreak(q3Row, qualifiedToday, startStr, todayStr) {
-  const flags = q3Row
-    ? ['day_1','day_2','day_3','day_4','day_5','day_6','day_7']
-        .map(k => q3Row[k] === true || q3Row[k] === 'true')
-    : Array(7).fill(false);
-  flags[6] = !!qualifiedToday; // override today with live cache
-
-  const today = new Date(todayStr + 'T00:00:00Z');
-  const start = startStr ? new Date(startStr + 'T00:00:00Z') : null;
-
-  const inRange = i => {
-    const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - (6 - i));
-    return !start || d >= start;
-  };
-
-  // Count consecutive qualifying days ending yesterday (held streak regardless of today)
-  let streak = 0;
-  for (let i = 5; i >= 0; i--) {
-    if (!inRange(i)) break;
-    if (flags[i]) streak++; else break;
-  }
-
-  // Extend by 1 if today is also qualified
-  if (flags[6] && inRange(6)) streak += 1;
-
-  return streak;
 }
 
 async function refreshPoolState() {
@@ -327,30 +295,6 @@ async function midnightSettlement() {
   const dateStr = istDateOf(Date.now() - 24 * 60 * 60 * 1000);
   console.log('Midnight settlement for', dateStr);
 
-  const qualified = await db.query(
-    `SELECT user_id FROM leaderboard_pool_state WHERE date_ist = $1 AND qualified = true`,
-    [dateStr]
-  );
-
-  for (const row of qualified.rows) {
-    // Idempotent: if last_qualifying_date is already dateStr (double run, or a second
-    // replica settling), the streak stays unchanged. Bonus payout tracking lives in
-    // the BigQuery reward tables, not here.
-    await db.query(`
-      INSERT INTO listener_streak (user_id, current_streak, last_qualifying_date, updated_at)
-      VALUES ($1, 1, $2, NOW())
-      ON CONFLICT (user_id) DO UPDATE SET
-        current_streak = CASE
-          WHEN listener_streak.last_qualifying_date = $2::date
-          THEN listener_streak.current_streak
-          WHEN listener_streak.last_qualifying_date = ($2::date - INTERVAL '1 day')::date
-          THEN listener_streak.current_streak + 1 ELSE 1
-        END,
-        last_qualifying_date = $2,
-        updated_at = NOW()
-    `, [row.user_id, dateStr]);
-  }
-
   // Snapshot the display rank each user actually saw at midnight.
   // For frozen-pool users: rank by final talktime within their locked pool.
   // Fallback: compute from target_rank + global_rank for any without pool_members.
@@ -400,9 +344,8 @@ async function midnightSettlement() {
   // Drop the previous day's in-memory caches so the next tick refetches fresh data
   cache.today     = { rows: null, fetchedAt: null };
   cache.yesterday = { rows: null, fetchedAt: null };
-  cache.streak    = { rows: null, fetchedAt: null };
 
-  console.log(`Settlement done: ${qualified.rows.length} streaks updated, ${poolSnap.length} display ranks saved`);
+  console.log(`Settlement done: ${poolSnap.length} display ranks saved`);
 }
 
 async function backfillYesterday() {
@@ -646,30 +589,16 @@ function mockYesterdayData(userId) {
   };
 }
 
-function mockStreakData(userId) {
-  // 5-day streak: days 3–7 qualified (indices 2–6), days 1–2 not
-  return {
-    user_id:        String(userId),
-    expert_id:      80011,
-    days:           [false, false, true, true, true, true, true],
-    current_streak: 5,
-    days_to_bonus:  2,
-    next_bonus_inr: 100
-  };
-}
-
 // ─── Debug (remove before production) ────────────────────────────────────────
 app.get('/api/debug/raw', requireAuth, async (req, res) => {
   try {
-    const [r1, r2, r3] = await Promise.allSettled([
+    const [r1, r2] = await Promise.allSettled([
       callRedash(process.env.REDASH_QUERY_1_ID),
-      callRedash(process.env.REDASH_QUERY_2_ID),
-      callRedash(process.env.REDASH_QUERY_3_ID)
+      callRedash(process.env.REDASH_QUERY_2_ID)
     ]);
     res.json({
       q1: r1.status === 'fulfilled' ? { cols: Object.keys(r1.value[0] || {}), sample: r1.value[0] } : { error: r1.reason?.message },
-      q2: r2.status === 'fulfilled' ? { cols: Object.keys(r2.value[0] || {}), sample: r2.value[0] } : { error: r2.reason?.message },
-      q3: r3.status === 'fulfilled' ? { cols: Object.keys(r3.value[0] || {}), sample: r3.value[0] } : { error: r3.reason?.message }
+      q2: r2.status === 'fulfilled' ? { cols: Object.keys(r2.value[0] || {}), sample: r2.value[0] } : { error: r2.reason?.message }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -902,44 +831,6 @@ app.get('/api/leaderboard/yesterday', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/leaderboard/streak', requireAuth, async (req, res) => {
-  if (MOCK_MODE || req.session.mode === 'test') return res.json(mockStreakData(req.session.userId));
-  try {
-    const userId = req.session.userId;
-
-    // Today's qualified status from live cache — only if it was fetched today (IST);
-    // right after a restart the restored cache may still hold yesterday's rows
-    const todayCacheValid = !!(cache.today?.rows && istDateOf(cache.today.fetchedAt) === istToday());
-    const allRows      = todayCacheValid ? cache.today.rows : [];
-    const myTodayRow   = allRows.find(r => String(r.user_id) === String(userId));
-    const qualifiedToday = !!(myTodayRow && (myTodayRow.qualified === true || myTodayRow.qualified === 'true'));
-
-    // Q3 tile data (cached 2h); gracefully absent if REDASH_QUERY_3_ID not set
-    let q3Row = null;
-    try {
-      const rows = await fetchOrCache('streak', SERVE_TTL_MS, process.env.REDASH_QUERY_3_ID);
-      q3Row = rows.find(r => String(r.user_id) === String(userId)) || null;
-    } catch (e) { /* Q3 absent — streak will be based only on today's live qualification */ }
-
-    const streak     = computeStreak(q3Row, qualifiedToday, getStartDate(), istToday());
-    const inCycle    = streak === 0 ? 0 : ((streak - 1) % 7) + 1;
-    const bonusHit   = streak > 0 && streak % 7 === 0;
-    const filled     = bonusHit ? 7 : inCycle;
-    const daysToBonus = bonusHit ? 0 : 7 - inCycle;
-
-    res.json({
-      user_id:        userId,
-      days:           Array.from({ length: 7 }, (_, i) => i < filled),
-      current_streak: streak,
-      days_to_bonus:  daysToBonus,
-      next_bonus_inr: 100
-    });
-  } catch (err) {
-    console.error('/api/leaderboard/streak:', err.message);
-    res.status(503).json({ error: 'Data unavailable, retry in a moment.' });
-  }
-});
-
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
@@ -975,7 +866,7 @@ const PORT = process.env.PORT || 3000;
     console.log(`isStartDate(): ${isStartDate()}, isBeforeStart(): ${isBeforeStart()}`);
 
     if (process.env.REDASH_QUERY_1_ID) {
-      // Warm up all 3 queries on startup (Redash fetches run in background)
+      // Warm up both queries on startup (Redash fetches run in background)
       (async () => {
         try {
           await fetchOrCache('today', Q1_REFRESH_MS, process.env.REDASH_QUERY_1_ID);
@@ -985,9 +876,6 @@ const PORT = process.env.PORT || 3000;
           await fetchOrCache('yesterday', 60 * 60 * 1000, process.env.REDASH_QUERY_2_ID);
           await backfillYesterday();
         } catch (e) { console.warn('Q2 warm-up:', e.message); }
-        try {
-          await fetchOrCache('streak', 60 * 60 * 1000, process.env.REDASH_QUERY_3_ID);
-        } catch (e) { console.warn('Q3 warm-up:', e.message); }
       })();
 
       // Q1: background refresh (default hourly; Q1_REFRESH_MINUTES to tune)
@@ -999,16 +887,12 @@ const PORT = process.env.PORT || 3000;
         } catch (e) { console.error('Q1 scheduled refresh:', e.message); }
       }, Q1_REFRESH_MS);
 
-      // Q2 + Q3: refresh every hour (yesterday talktime and streak tiles)
+      // Q2: refresh every hour (yesterday talktime)
       setInterval(async () => {
         try {
           cache.yesterday = { rows: null, fetchedAt: null };
           await fetchOrCache('yesterday', 60 * 60 * 1000, process.env.REDASH_QUERY_2_ID);
         } catch (e) { console.error('Q2 hourly refresh:', e.message); }
-        try {
-          cache.streak = { rows: null, fetchedAt: null };
-          await fetchOrCache('streak', 60 * 60 * 1000, process.env.REDASH_QUERY_3_ID);
-        } catch (e) { console.error('Q3 hourly refresh:', e.message); }
       }, 60 * 60 * 1000);
     }
 

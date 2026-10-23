@@ -1,6 +1,6 @@
 # Dostt Listener Leaderboard
 
-A daily talktime leaderboard for Dostt listeners (experts). Each listener sees a personalised pool of 20 nearby competitors, earns podium rewards for finishing in the top 3, and builds a streak bonus for qualifying on consecutive days.
+A daily talktime leaderboard for Dostt listeners (experts). Each listener sees a personalised pool of 20 nearby competitors, and earns podium rewards for finishing in the top 3.
 
 ---
 
@@ -9,7 +9,6 @@ A daily talktime leaderboard for Dostt listeners (experts). Each listener sees a
 - **Qualify** — accumulate ≥ 10 minutes of call talktime in a calendar day (IST)
 - **Pool** — each listener is placed in a pool of 20 near-ranked competitors; display rank is 1–20 within that pool
 - **Podium rewards** — credited at midnight IST: Rank 1 → ₹1,500 · Rank 2 → ₹1,000 · Rank 3 → ₹500 (all as Dostt coins)
-- **Streak bonus** — ₹100 in coins for every 7 consecutive qualifying days
 - **Frozen pools** — a listener's 20 competitors are fixed for the day; display rank is their live talktime position within that pool (only the global top 3 can show rank 1/2/3)
 
 ---
@@ -54,11 +53,10 @@ Edit `.env` and fill in your values:
 | `REDASH_API_KEY` | Redash API key |
 | `REDASH_QUERY_1_ID` | Today's talktime query ID |
 | `REDASH_QUERY_2_ID` | Yesterday's talktime query ID |
-| `REDASH_QUERY_3_ID` | 7-day streak tiles query ID |
 | `REDASH_QUERY_4_ID` | Mobile number → user_id lookup query ID |
 | `DATABASE_URL` | Postgres connection string — omit to run without DB |
 | `SESSION_SECRET` | Express session signing secret |
-| `LEADERBOARD_START_DATE` | `YYYY-MM-DD` (IST) — suppresses yesterday/streak history on launch day |
+| `LEADERBOARD_START_DATE` | `YYYY-MM-DD` (IST) — suppresses yesterday history on launch day |
 | `PORT` | Default `3000` |
 
 > If `REDASH_QUERY_1_ID` is not set the app runs in **MOCK_MODE** with hardcoded data — useful for UI testing without Redash credentials.
@@ -69,7 +67,7 @@ Edit `.env` and fill in your values:
 npm run setup    # node scripts/setup_db.js
 ```
 
-Creates tables: `session`, `leaderboard_pool_state`, `listener_streak`, `leaderboard_daily_results`, `leaderboard_data_cache`, `login_log`.  
+Creates tables: `session`, `leaderboard_pool_state`, `leaderboard_daily_results`, `leaderboard_data_cache`, `login_log`.  
 Safe to re-run — uses `CREATE TABLE IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS`.
 
 ### 4. Run
@@ -131,11 +129,11 @@ docker-compose.yml
 
 **Rank updates** — `refreshPoolState()` runs on the Q1 refresh cadence. Display rank is the listener's live talktime position within their frozen pool — no randomness. Pools are re-assigned only when undersized or when a non-global-top-3 listener floats into their pool's top 3 (promoted to a tougher pool at rank 4). Listeners with 3+ people above them globally are never shown in the top 3.
 
-**Cache** — Three Redash queries are cached in memory and in `leaderboard_data_cache`. Q1 (today) refreshes every `Q1_REFRESH_MINUTES` (default 60); Q2 (yesterday) and Q3 (streak) every hour. User requests always serve from cache. On startup the server loads from DB so a restart doesn't cold-hit Redash.
+**Cache** — Both leaderboard Redash queries are cached in memory and in `leaderboard_data_cache`. Q1 (today) refreshes every `Q1_REFRESH_MINUTES` (default 60); Q2 (yesterday) every hour. User requests always serve from cache. On startup the server loads from DB so a restart doesn't cold-hit Redash.
 
-**Midnight settlement** — `midnightSettlement()` runs at 00:01 IST: updates `listener_streak`, appends final display ranks to `leaderboard_daily_results` (per-day history), and purges stale pool rows.
+**Midnight settlement** — `midnightSettlement()` runs at 00:01 IST: appends final display ranks to `leaderboard_daily_results` (per-day history), and purges stale pool rows.
 
-**Start date** — `LEADERBOARD_START_DATE` suppresses yesterday/streak history on launch day. The yesterday tab shows a "Day 1" welcome card; streak is capped at 1.
+**Start date** — `LEADERBOARD_START_DATE` suppresses yesterday history on launch day. The yesterday tab shows a "Day 1" welcome card.
 
 ---
 
@@ -143,7 +141,7 @@ docker-compose.yml
 
 1. Banner link `/?user_id=XYZ` → server decodes, saves to session, redirects to `/leaderboard?user_id=XYZ`
 2. Mobile login at `/login` → looks up `user_id` by phone number via Redash Q4
-3. `/leaderboard` serves the HTML shell; JS fetches `/api/leaderboard/today`, `/yesterday`, `/streak`
+3. `/leaderboard` serves the HTML shell; JS fetches `/api/leaderboard/today` and `/yesterday`
 4. The `user_id` is kept in the URL so session expiry doesn't log the user out
 
 ---
