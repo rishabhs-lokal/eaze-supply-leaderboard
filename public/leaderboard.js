@@ -13,7 +13,6 @@ const pendingCard    = $('pending-card');
 const lbWrap         = $('lb-list');
 const podiumEl       = $('podium');
 const lbRows         = $('lb-rows');
-const streakSection  = $('streak-section');
 const refreshBtn     = $('refresh-btn');
 const lastUpdatedEl  = $('last-updated');
 
@@ -196,7 +195,6 @@ async function loadToday() {
     todayData = data;
     drift.push(data);
     renderToday(data);
-    loadStreak();
     startLiveTicker(data);
   } catch (err) {
     showError('Could not load leaderboard — retrying in 10 minutes.');
@@ -415,57 +413,6 @@ function startLiveTicker(data) {
   }, 1000);
 }
 
-// ── Streak ─────────────────────────────────────────────────────────
-async function loadStreak() {
-  renderStreak(null); // show section immediately with empty state
-  try {
-    const res = await fetch('/api/leaderboard/streak');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data) renderStreak(data);
-  } catch {
-    // real data unavailable — section visible with empty state
-  }
-}
-
-function renderStreak(data) {
-  streakSection.classList.remove('hidden');
-
-  const days     = data && data.days ? data.days : Array(7).fill(false);
-  const streak   = data ? Number(data.current_streak) : 0;
-  const daysTo   = data ? Number(data.days_to_bonus)  : 7;
-
-  // dots 1–7: filled in order as streak grows; dot N = streak day N
-  const tilesHtml = Array.from({ length: 7 }, (_, idx) => {
-    const dayNum   = idx + 1;
-    const filled   = dayNum <= streak;
-    const isLatest = dayNum === streak;
-    const cls      = filled ? (isLatest ? 'today-filled' : 'filled') : 'empty';
-
-    return `
-      <div class="streak-tile">
-        <div class="streak-tile-dot ${cls}">${filled ? '✓' : ''}</div>
-        <div class="streak-tile-day">${dayNum}</div>
-      </div>
-    `;
-  }).join('');
-
-  const bonusMsg = daysTo > 0
-    ? `<span>${daysTo} day${daysTo !== 1 ? 's' : ''} to ₹100 bonus</span>`
-    : `<span style="color:var(--accent)">🎉 Bonus unlocked!</span>`;
-
-  streakSection.innerHTML = `
-    <div class="streak-heading">7-Day Streak</div>
-    <div class="streak-tiles">${tilesHtml}</div>
-    <div class="streak-stats">
-      <div class="streak-count">
-        <span>${streak}</span>day${streak !== 1 ? 's' : ''} streak
-      </div>
-      <div class="streak-to-bonus">${bonusMsg}</div>
-    </div>
-  `;
-}
-
 // ── Yesterday ─────────────────────────────────────────────────────
 async function loadYesterday() {
   yesterdayLoaded = true;
@@ -488,7 +435,7 @@ function renderYesterday(data, container) {
       <div class="yest-launch-day">
         <div class="yest-launch-icon">🎉</div>
         <div class="yest-launch-title">Welcome to Dostt Leaderboard!</div>
-        <div class="yest-launch-sub">This is Day 1. Come back tomorrow to see your finish position and streak.</div>
+        <div class="yest-launch-sub">This is Day 1. Come back tomorrow to see your finish position.</div>
       </div>`;
     return;
   }
